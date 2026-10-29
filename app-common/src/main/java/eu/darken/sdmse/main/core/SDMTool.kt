@@ -1,0 +1,44 @@
+package eu.darken.sdmse.main.core
+
+import android.os.Parcelable
+import eu.darken.sdmse.common.ca.CaString
+import eu.darken.sdmse.common.progress.Progress
+import eu.darken.sdmse.common.sharedresource.HasSharedResource
+import kotlinx.coroutines.flow.Flow
+
+interface SDMTool : Progress.Host, Progress.Client, HasSharedResource<Any> {
+
+    val type: Type
+
+    val state: Flow<State>
+
+    interface State
+
+    suspend fun submit(task: Task): Task.Result
+
+    interface Task : Parcelable {
+        val type: Type
+
+        interface Result : Parcelable {
+            val type: Type
+
+            val primaryInfo: CaString
+            val secondaryInfo: CaString? get() = null
+        }
+    }
+
+    // If you rename any of these, check mapping for ROOM DB.
+    // APPCONTROL/ANALYZER/DEDUPLICATOR/SQUEEZER/SWIPER are no longer shipped as tools, but their
+    // constants must stay: existing installs have persisted reports/tasks keyed by these names and
+    // `SDMToolTypeConverter` maps the enum by name. Removing them would break DB reads on upgrade.
+    enum class Type {
+        CORPSEFINDER,
+        SYSTEMCLEANER,
+        APPCLEANER,
+        APPCONTROL,
+        ANALYZER,
+        DEDUPLICATOR,
+        SQUEEZER,
+        SWIPER,
+    }
+}

@@ -1,0 +1,506 @@
+package eu.darken.sdmse.main.ui.dashboard
+
+import dagger.hilt.android.lifecycle.HiltViewModel
+import eu.darken.sdmse.appcleaner.core.AppCleaner
+import eu.darken.sdmse.appcleaner.core.hasData
+import eu.darken.sdmse.appcleaner.ui.AppCleanerListRoute
+import eu.darken.sdmse.appcleaner.ui.AppJunkDetailsRoute
+import eu.darken.sdmse.appcleaner.core.tasks.AppCleanerOneClickTask
+import eu.darken.sdmse.appcleaner.core.tasks.AppCleanerProcessingTask
+import eu.darken.sdmse.appcleaner.core.tasks.AppCleanerScanTask
+import eu.darken.sdmse.appcleaner.core.tasks.AppCleanerSchedulerTask
+import eu.darken.sdmse.appcleaner.core.tasks.AppCleanerTask
+import eu.darken.sdmse.common.SdmSeLinks
+import eu.darken.sdmse.corpsefinder.ui.CorpseDetailsRoute
+import eu.darken.sdmse.corpsefinder.ui.CorpseFinderListRoute
+import eu.darken.sdmse.common.flow.SingleEventFlow
+import eu.darken.sdmse.common.WebpageTool
+import eu.darken.sdmse.common.areas.DataAreaManager
+import eu.darken.sdmse.common.coroutine.DispatcherProvider
+import eu.darken.sdmse.common.datastore.value
+import eu.darken.sdmse.common.datastore.valueBlocking
+import eu.darken.sdmse.common.debug.DebugCardProvider
+import eu.darken.sdmse.common.debug.logging.Logging.Priority.INFO
+import eu.darken.sdmse.common.debug.logging.Logging.Priority.VERBOSE
+import eu.darken.sdmse.common.debug.logging.Logging.Priority.WARN
+import eu.darken.sdmse.common.debug.logging.asLog
+import eu.darken.sdmse.common.debug.logging.log
+import eu.darken.sdmse.common.debug.logging.logTag
+import eu.darken.sdmse.common.debug.recorder.core.DebugLogSession
+import eu.darken.sdmse.common.debug.recorder.core.DebugLogSessionManager
+import eu.darken.sdmse.common.debug.recorder.core.RecorderModule
+import eu.darken.sdmse.common.debug.recorder.core.SessionId
+import eu.darken.sdmse.common.device.DeviceDetective
+import eu.darken.sdmse.main.ui.dashboard.cards.DebugRecorderDashboardCardItem
+import eu.darken.sdmse.common.debug.recorder.ui.RecorderActivity
+import dagger.hilt.android.qualifiers.ApplicationContext
+import eu.darken.sdmse.common.flow.intervalFlow
+import eu.darken.sdmse.common.flow.replayingShare
+import eu.darken.sdmse.common.flow.throttleLatest
+import eu.darken.sdmse.common.review.ReviewTool
+import eu.darken.sdmse.common.rngString
+import eu.darken.sdmse.common.uix.ViewModel4
+import eu.darken.sdmse.common.updater.UpdateService
+import eu.darken.sdmse.corpsefinder.core.CorpseFinder
+import eu.darken.sdmse.corpsefinder.core.hasData
+import eu.darken.sdmse.corpsefinder.core.tasks.CorpseFinderDeleteTask
+import eu.darken.sdmse.corpsefinder.core.tasks.CorpseFinderOneClickTask
+import eu.darken.sdmse.corpsefinder.core.tasks.CorpseFinderScanTask
+import eu.darken.sdmse.corpsefinder.core.tasks.CorpseFinderSchedulerTask
+import eu.darken.sdmse.corpsefinder.core.tasks.CorpseFinderTask
+import eu.darken.sdmse.corpsefinder.core.tasks.UninstallWatcherTask
+import eu.darken.sdmse.main.core.CurriculumVitae
+import eu.darken.sdmse.main.core.DashboardCardConfig
+import eu.darken.sdmse.main.core.DashboardCardType
+import eu.darken.sdmse.main.core.GeneralSettings
+import eu.darken.sdmse.main.core.SDMTool
+import eu.darken.sdmse.main.core.release.ReleaseManager
+import eu.darken.sdmse.main.core.taskmanager.TaskManager
+import eu.darken.sdmse.main.core.taskmanager.TaskSubmitter
+import eu.darken.sdmse.main.core.taskmanager.getLatestResult
+import eu.darken.sdmse.main.ui.dashboard.cards.DashboardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.AnniversaryDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.DebugDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.DryRunWarningDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.ErrorDataAreaDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.ReviewDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.SetupDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.StatsDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.TitleDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.ToolDashboardCardItem
+import eu.darken.sdmse.main.ui.dashboard.cards.UpdateDashboardCardItem
+import eu.darken.sdmse.setup.SetupManager
+import eu.darken.sdmse.setup.SetupRoute
+import eu.darken.sdmse.stats.core.Report
+import eu.darken.sdmse.stats.core.SpaceHistoryRepo
+import eu.darken.sdmse.stats.core.SpaceTracker
+import eu.darken.sdmse.stats.core.StatsRepo
+import eu.darken.sdmse.stats.core.StatsSettings
+import eu.darken.sdmse.stats.ui.AffectedFilesRoute
+import eu.darken.sdmse.stats.ui.ReportsRoute
+import eu.darken.sdmse.systemcleaner.ui.FilterContentDetailsRoute
+import eu.darken.sdmse.systemcleaner.ui.SystemCleanerListRoute
+import eu.darken.sdmse.systemcleaner.core.SystemCleaner
+import eu.darken.sdmse.systemcleaner.core.hasData
+import eu.darken.sdmse.systemcleaner.core.tasks.SystemCleanerOneClickTask
+import eu.darken.sdmse.systemcleaner.core.tasks.SystemCleanerProcessingTask
+import eu.darken.sdmse.systemcleaner.core.tasks.SystemCleanerScanTask
+import eu.darken.sdmse.systemcleaner.core.tasks.SystemCleanerSchedulerTask
+import eu.darken.sdmse.systemcleaner.core.tasks.SystemCleanerTask
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.update
+import java.time.Duration
+import java.time.Instant
+import javax.inject.Inject
+import kotlin.time.Duration.Companion.hours
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+@HiltViewModel
+class DashboardViewModel @Inject constructor(
+    @ApplicationContext private val context: android.content.Context,
+    dispatcherProvider: DispatcherProvider,
+    private val areaManager: DataAreaManager,
+    internal val taskManager: TaskManager,
+    internal val setupManager: SetupManager,
+    internal val corpseFinder: CorpseFinder,
+    internal val systemCleaner: SystemCleaner,
+    internal val appCleaner: AppCleaner,
+    debugCardProvider: DebugCardProvider,
+    private val generalSettings: GeneralSettings,
+    internal val webpageTool: WebpageTool,
+    internal val updateService: UpdateService,
+    private val sessionManager: DebugLogSessionManager,
+    private val releaseManager: ReleaseManager,
+    private val reviewTool: ReviewTool,
+    anniversaryProvider: AnniversaryProvider,
+    internal val statsRepo: StatsRepo,
+    internal val statsSettings: StatsSettings,
+    internal val curriculumVitae: CurriculumVitae,
+    internal val spaceHistoryRepo: SpaceHistoryRepo,
+    internal val spaceTracker: SpaceTracker,
+    deviceDetective: DeviceDetective,
+) : ViewModel4(dispatcherProvider, TAG) {
+
+    // TV-style devices navigate via D-pad focus, which scrolls the grid — auto-hiding dock on
+    // scroll would hide controls the user is about to focus. Static per process, no flow needed.
+    val isTvDevice: Boolean by lazy { deviceDetective.isTvLikeDevice() }
+
+    init {
+        launch {
+            releaseManager.checkEarlyAdopter()
+        }
+    }
+
+    private val refreshTrigger = MutableStateFlow(rngString)
+
+    val events = SingleEventFlow<DashboardEvents>()
+
+    // The dashboard list is an all-or-nothing combine of many sources: it stays on the loading
+    // spinner until every source has emitted once. Several sources re-run async work (Room, DataStore,
+    // a filesystem scan) on every ViewModel recreation because they're shared with stopTimeout=0 /
+    // replayExpiration=0, so a single slow source could wedge the whole screen permanently on a warm
+    // Activity recreation. These helpers guarantee each combine input has an immediate first value and
+    // tag it for diagnostics so a stalling upstream is identifiable from VERBOSE logs.
+    private fun descLite(value: Any?): String = when (value) {
+        null -> "null"
+        is Collection<*> -> "size=${value.size}"
+        else -> value::class.simpleName ?: "?"
+    }
+
+    /** Inject [fallback] as the immediate first value (outer onStart) while the inner handlers log the
+     *  real upstream only — a missing "upstream emit" on reproduction pinpoints the staller. */
+    private fun <T> Flow<T>.listStateSource(name: String, fallback: T): Flow<T> = this
+        .onEach { log(TAG, VERBOSE) { "listState.$name upstream emit: ${descLite(it)}" } }
+        .onStart { log(TAG, VERBOSE) { "listState.$name upstream start" } }
+        .onStart { emit(fallback) }
+
+    /** Diagnostic-only tag for sources that already have a guaranteed-immediate first value. */
+    private fun <T> Flow<T>.listStateDiag(name: String): Flow<T> = this
+        .onEach { log(TAG, VERBOSE) { "listState.$name upstream emit: ${descLite(it)}" } }
+        .onStart { log(TAG, VERBOSE) { "listState.$name upstream start" } }
+
+    private val updateInfo: Flow<UpdateDashboardCardItem?> = buildUpdateInfo()
+
+    internal val easterEggTriggered = MutableStateFlow(false)
+
+    private val titleCardItem = buildTitleCardItem()
+
+    private val corpseFinderItem: Flow<ToolDashboardCardItem> = buildCorpseFinderItem()
+
+    private val systemCleanerItem: Flow<ToolDashboardCardItem> = buildSystemCleanerItem()
+
+    private val appCleanerItem: Flow<ToolDashboardCardItem> = buildAppCleanerItem()
+
+    private val dataAreaItem: Flow<ErrorDataAreaDashboardCardItem?> = areaManager.latestResult
+        .map { result -> dataAreaCardFor(result) { launch { areaManager.reload() } } }
+
+    private val setupCardItem: Flow<SetupDashboardCardItem?> = buildSetupCardItem()
+
+    private val reviewItem: Flow<ReviewDashboardCardItem?> = reviewTool.state.map { state ->
+        if (!state.shouldAskForReview) return@map null
+
+        ReviewDashboardCardItem(
+            onReview = {
+                launch { reviewTool.reviewNow(it) }
+            },
+            onDismiss = {
+                launch { reviewTool.dismiss() }
+            }
+        )
+    }
+
+    private val statsItem: Flow<StatsDashboardCardItem?> = buildStatsItem()
+
+    private val anniversaryItem: Flow<AnniversaryDashboardCardItem?> = anniversaryProvider.item
+
+    private val dashboardCardConfig: Flow<DashboardCardConfig> = generalSettings.dashboardCardConfig.flow
+        .replayingShare(vmScope)
+
+    // Combine refresh trigger with card config to stay within combine's argument limit
+    private val cardConfigWithRefresh: Flow<DashboardCardConfig> = combine(
+        refreshTrigger,
+        dashboardCardConfig,
+    ) { _, config -> config }
+
+    val listState: StateFlow<ListState?> = eu.darken.sdmse.common.flow.combine(
+        sessionManager.sessions.listStateSource("sessions", emptyList()),
+        debugCardProvider.create(
+            vm = this,
+            onNavigate = { navTo(it as eu.darken.sdmse.common.navigation.NavigationDestination) },
+            onError = { errorEvents.tryEmit(it) },
+            onShowEvent = { events.tryEmit(it) },
+        ).listStateSource("debug", null),
+        titleCardItem.listStateDiag("title"),
+        updateInfo.listStateSource("update", null),
+        setupCardItem.listStateSource("setup", null),
+        dataAreaItem.listStateSource("dataArea", null),
+        corpseFinderItem.listStateDiag("corpse"),
+        systemCleanerItem.listStateDiag("system"),
+        appCleanerItem.listStateDiag("app"),
+        reviewItem.listStateSource("review", null),
+        anniversaryItem.listStateSource("anniversary", null),
+        statsItem.listStateSource("stats", null),
+        easterEggTriggered.listStateDiag("easterEgg"),
+        cardConfigWithRefresh.listStateDiag("cardConfig"),
+    ) { sessions: List<DebugLogSession>,
+        debugItem: DebugDashboardCardItem?,
+        titleInfo: TitleDashboardCardItem,
+        updateInfo: UpdateDashboardCardItem?,
+        setupItem: SetupDashboardCardItem?,
+        dataAreaError: ErrorDataAreaDashboardCardItem?,
+        corpseFinderItem: ToolDashboardCardItem?,
+        systemCleanerItem: ToolDashboardCardItem?,
+        appCleanerItem: ToolDashboardCardItem?,
+        reviewItem: ReviewDashboardCardItem?,
+        anniversaryItem: AnniversaryDashboardCardItem?,
+        statsItem: StatsDashboardCardItem?,
+        easterEggTriggered,
+        cardConfig: DashboardCardConfig ->
+        val items = mutableListOf<DashboardItem>(titleInfo)
+
+        val noError = dataAreaError == null
+
+        val anyInitializing = setOfNotNull(
+            corpseFinderItem?.isInitializing,
+            systemCleanerItem?.isInitializing,
+            appCleanerItem?.isInitializing,
+        ).any { it }
+
+        if (updateInfo == null && setupItem == null && noError && reviewItem != null && !anyInitializing) {
+            log(TAG, INFO) { "Showing review item" }
+            items.add(reviewItem)
+        } else if (reviewItem != null) {
+            log(TAG) { "Could show review item but other high priority items are currently being shown" }
+        }
+
+        updateInfo?.let { items.add(it) }
+        setupItem?.let { items.add(it) }
+        dataAreaError?.let { items.add(it) }
+
+        // Dry-run makes every cleanup a no-op while still reporting freed space. The toggle lives at the
+        // bottom of the dashboard, so warn up top for as long as it's on. debugItem is null unless debug
+        // mode is on, which matches how App.kt gates Bugs.isDryRun.
+        debugItem
+            ?.takeIf { it.isDryRunEnabled }
+            ?.let { debug -> items.add(DryRunWarningDashboardCardItem(onDisable = { debug.onDryRunEnabled(false) })) }
+
+        anniversaryItem?.let { items.add(it) }
+
+        // Add tool cards based on user configuration
+        for (entry in cardConfig.cards) {
+            if (!entry.isVisible) continue
+            when (entry.type) {
+                DashboardCardType.CORPSEFINDER -> corpseFinderItem?.let { items.add(it) }
+                DashboardCardType.SYSTEMCLEANER -> systemCleanerItem?.let { items.add(it) }
+                DashboardCardType.APPCLEANER -> appCleanerItem?.let { items.add(it) }
+                DashboardCardType.STATS -> statsItem?.let { items.add(it) }
+            }
+        }
+
+        val recordingSession = sessions.filterIsInstance<DebugLogSession.Recording>().firstOrNull()
+        val isRecording = recordingSession != null
+        if (isRecording || debugItem != null) {
+            val item = DebugRecorderDashboardCardItem(
+                webpageTool = webpageTool,
+                isRecording = isRecording,
+                currentLogDir = recordingSession?.logDir,
+                onToggleRecording = {
+                    if (isRecording) {
+                        launch {
+                            when (val result = sessionManager.requestStopRecording()) {
+                                is RecorderModule.StopResult.TooShort -> {
+                                    events.tryEmit(DashboardEvents.ShowShortRecordingWarning)
+                                }
+                                is RecorderModule.StopResult.Stopped -> {
+                                    launchRecorderActivity(result.sessionId)
+                                }
+                                is RecorderModule.StopResult.NotRecording -> {}
+                            }
+                        }
+                    } else {
+                        launch { sessionManager.startRecording() }
+                    }
+                }
+            )
+            items.add(item)
+        }
+
+        debugItem?.let { items.add(it) }
+
+        ListState(
+            items = items,
+            isEasterEgg = easterEggTriggered,
+        )
+    }
+        .throttleLatest(500)
+        .safeStateIn(
+            initialValue = null,
+            onError = { null },
+        )
+
+    data class ListState(
+        val items: List<DashboardItem>,
+        val isEasterEgg: Boolean = false,
+    )
+
+    /** The main-action/hero state machine; this VM delegates to it and keeps error/navigation routing. */
+    private val mainActionEngine = DashboardMainActionEngine(
+        scope = vmScope,
+        taskManager = taskManager,
+        corpseFinder = corpseFinder,
+        systemCleaner = systemCleaner,
+        appCleaner = appCleaner,
+        generalSettings = generalSettings,
+        submitTask = ::submitTask,
+        onStateError = { errorEvents.tryEmit(it) },
+    )
+
+    val bottomBarState: StateFlow<BottomBarState?> = mainActionEngine.bottomBarState(
+        listIsReady = listState.map { state -> state?.items?.any { it is MainActionItem } == true },
+    ).safeStateIn(
+        initialValue = null,
+        onError = { null },
+    )
+
+    /**
+     * Whether the hero card is expanded. Auto-expands only for a one-tap main action that produced
+     * a result; anything started elsewhere leaves it collapsed and reachable via the bar's chip.
+     */
+    val isHeroExpanded: StateFlow<Boolean> = mainActionEngine.isHeroExpanded
+
+    fun dismissHero() = mainActionEngine.dismissHero()
+
+    /** Expands a collapsed hero (via the compact summary chip in the bar). */
+    fun expandHero() = mainActionEngine.expandHero()
+
+    /**
+     * Drops all pending scan results, returning the dashboard to its pristine SCAN state. Unlike
+     * [dismissHero] (which only hides the card), this clears the tools' data, so the main action
+     * no longer threatens deletion. Recoverable by simply rescanning, hence no confirmation step.
+     */
+    fun discardResults() = mainActionEngine.discardResults()
+
+    fun mainAction(actionState: BottomBarState.Action) = mainActionEngine.mainAction(actionState)
+
+    fun confirmCorpseDeletion() = launch {
+        log(TAG, INFO) { "confirmCorpseDeletion()" }
+        submitTask(CorpseFinderDeleteTask())
+    }
+
+    fun showCorpseFinder() {
+        log(TAG, INFO) { "showCorpseFinderDetails()" }
+        navTo(CorpseFinderListRoute)
+    }
+
+    fun confirmFilterContentDeletion() = launch {
+        log(TAG, INFO) { "confirmFilterContentDeletion()" }
+        submitTask(SystemCleanerProcessingTask())
+    }
+
+    fun showSystemCleaner() {
+        log(TAG, INFO) { "showSystemCleanerDetails()" }
+        navTo(SystemCleanerListRoute)
+    }
+
+    fun confirmAppJunkDeletion() = launch {
+        log(TAG, INFO) { "confirmAppJunkDeletion()" }
+        submitTask(AppCleanerProcessingTask())
+    }
+
+    fun showAppCleaner() {
+        log(TAG, INFO) { "showAppCleanerDetails()" }
+        navTo(AppCleanerListRoute)
+    }
+
+    /**
+     * Hero-chip tap. Routes by the *rendered* card mode (passed up from the card, not re-read from
+     * state): a "will be freed" chip opens the live findings list to review; a "freed" chip opens
+     * what that tool actually removed (its report), since the live list is now empty.
+     */
+    fun onHeroToolClick(mode: HeroSummary.Mode, type: SDMTool.Type) {
+        log(TAG, INFO) { "onHeroToolClick($mode, $type)" }
+        when (mode) {
+            HeroSummary.Mode.FREED -> showToolReport(type)
+            HeroSummary.Mode.FREEABLE -> showTool(type)
+            // Renders no chips, so there is nothing here to tap.
+            HeroSummary.Mode.NOTHING_FREED -> {}
+        }
+    }
+
+    /** Opens a tool's findings list — used by the hero card's per-tool chips (pre-deletion). */
+    fun showTool(type: SDMTool.Type) {
+        log(TAG, INFO) { "showTool($type)" }
+        when (type) {
+            SDMTool.Type.CORPSEFINDER -> showCorpseFinder()
+            SDMTool.Type.SYSTEMCLEANER -> showSystemCleaner()
+            SDMTool.Type.APPCLEANER -> showAppCleaner()
+            else -> log(TAG, WARN) { "showTool() ignoring unsupported type: $type" }
+        }
+    }
+
+    /**
+     * Opens the report for what [type] just removed (post-deletion freed-hero chip). Resolves *this*
+     * cleanup's report via [DashboardMainActionEngine.freedResultSince]; falls back to the reports
+     * list when the report isn't persisted yet (sub-second tap) or the deletion failed.
+     */
+    fun showToolReport(type: SDMTool.Type) = launch {
+        log(TAG, INFO) { "showToolReport($type)" }
+        val report = statsRepo.getReportForToolSince(type, mainActionEngine.freedResultSince)
+        when (report?.status) {
+            Report.Status.SUCCESS, Report.Status.PARTIAL_SUCCESS -> navTo(AffectedFilesRoute(report.reportId))
+            else -> navTo(ReportsRoute)
+        }
+    }
+
+    fun confirmStopRecording() = launch {
+        val result = sessionManager.forceStopRecording() ?: return@launch
+        launchRecorderActivity(result.sessionId)
+    }
+
+    private fun launchRecorderActivity(sessionId: SessionId) {
+        val intent = RecorderActivity.getLaunchIntent(context, sessionId).apply {
+            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        events.tryEmit(DashboardEvents.OpenIntent(intent))
+    }
+
+    fun undoSetupHide() = launch {
+        log(TAG) { "undoSetupHide()" }
+        setupManager.setDismissed(false)
+    }
+
+    internal suspend fun submitTask(task: SDMTool.Task): SDMTool.Task.Result {
+        log(TAG, VERBOSE) { "Submitting $task" }
+        val result = taskManager.submit(task)
+        log(TAG, VERBOSE) { "Task result for $task was $result" }
+        when (result) {
+            is CorpseFinderTask.Result -> when (result) {
+                is CorpseFinderScanTask.Success -> {}
+                is UninstallWatcherTask.Success -> {}
+                is CorpseFinderSchedulerTask.Success -> {}
+                is CorpseFinderDeleteTask.Success -> events.tryEmit(DashboardEvents.TaskResult(result))
+                is CorpseFinderOneClickTask.Success -> events.tryEmit(DashboardEvents.TaskResult(result))
+            }
+
+            is SystemCleanerTask.Result -> when (result) {
+                is SystemCleanerScanTask.Success -> {}
+                is SystemCleanerSchedulerTask.Success -> {}
+                is SystemCleanerProcessingTask.Success -> events.tryEmit(DashboardEvents.TaskResult(result))
+                is SystemCleanerOneClickTask.Success -> events.tryEmit(DashboardEvents.TaskResult(result))
+            }
+
+            is AppCleanerTask.Result -> when (result) {
+                is AppCleanerScanTask.Success -> {}
+                is AppCleanerSchedulerTask.Success -> {}
+                is AppCleanerProcessingTask.Success -> events.tryEmit(DashboardEvents.TaskResult(result))
+                is AppCleanerOneClickTask.Success -> events.tryEmit(DashboardEvents.TaskResult(result))
+            }
+
+        }
+        return result
+    }
+
+    companion object {
+        private val TAG = logTag("Dashboard", "ViewModel")
+
+        internal fun dataAreaCardFor(
+            result: Result<DataAreaManager.State>?,
+            onReload: () -> Unit,
+        ): ErrorDataAreaDashboardCardItem? = when {
+            result == null -> null
+            result.getOrNull()?.areas?.isNotEmpty() == true -> null
+            else -> ErrorDataAreaDashboardCardItem(buildFailed = result.isFailure, onReload = onReload)
+        }
+    }
+}

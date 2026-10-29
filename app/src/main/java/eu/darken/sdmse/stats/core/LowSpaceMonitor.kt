@@ -1,0 +1,172 @@
+package eu.darken.sdmse.stats.core
+
+import eu.darken.sdmse.stats.core.LowStorageSettings
+import eu.darken.sdmse.common.datastore.value
+import eu.darken.sdmse.common.debug.logging.Logging.Priority.ERROR
+import eu.darken.sdmse.common.debug.logging.Logging.Priority.VERBOSE
+import eu.darken.sdmse.common.debug.logging.Logging.Priority.WARN
+import eu.darken.sdmse.common.debug.logging.asLog
+import eu.darken.sdmse.common.debug.logging.log
+import eu.darken.sdmse.common.debug.logging.logTag
+import eu.darken.sdmse.stats.core.forecast.StorageForecaster
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.time.Duration
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * Decides whether the low-space warning should be showing, and makes it so.
+ *
+ * Driven by the six-hourly [SpaceMonitorWorker] plus an observer that reacts the moment the user
+ * flips the setting. Six-hourly is inexact and Doze can defer it, which is acceptable for a
+ * gigabyte-scale advisory.
+ */
+@Singleton
+class LowSpaceMonitor @Inject constructor(
+    private val spaceTracker: SpaceTracker,
+    private val spaceHistoryRepo: SpaceHistoryRepo,
+    private val lowStorageSettings: LowStorageSettings,
+    private val notifications: LowSpaceNotifications,
+) {
+
+    private val started = AtomicBoolean(false)
+
+    /**
+     * Serializes the read-decide-post-write transaction.
+     *
+     * The worker run, the observer and a toggle-off can all land at once. Without this, two checks
+     * could both read `armed = true` and post twice, and a [cancelAndRearm] could finish before an
+     * in-flight check posts, leaving a warning on screen with the latch disarmed after the feature
+     * was switched off or Pro lapsed.
+     */
+    private val mutex = Mutex()
+
+    /**
+     * Reacts to the toggle without waiting for the next worker run.
+     *
+     * Cancelling on the way down keeps a posted warning from lingering for up to six hours after
+     * the user switched it off, and the [check] on the way up makes enabling the setting do
+     * something observable instead of looking broken.
+     */
+    fun start(scope: CoroutineScope) {
+        if (!started.compareAndSet(false, true)) return
+        log(TAG, VERBOSE) { "start()" }
+
+        lowStorageSettings.lowSpaceNotificationEnabled.flow
+            .distinctUntilChanged()
+            .onEach { enabled ->
+                if (enabled) {
+                    log(TAG) { "Low space warning became active, checking now" }
+                    check()
+                } else {
+                    log(TAG) { "Low space warning is disabled, cancelling" }
+                    cancelAndRearm()
+                }
+            }
+            .launchIn(scope)
+    }
+
+    /**
+     * One evaluation of the primary volume. Never throws: a notification failure must not break
+     * snapshot recording or the widget refresh in [SpaceMonitorWorker].
+     */
+    suspend fun check() {
+        try {
+            mutex.withLock { checkInternal() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log(TAG, ERROR) { "check() failed: ${e.asLog()}" }
+        }
+    }
+
+    private suspend fun checkInternal() {
+        val enabled = lowStorageSettings.lowSpaceNotificationEnabled.value()
+        val armed = lowStorageSettings.lowSpaceNotificationArmed.value()
+
+        // recordSnapshot() returns Unit and is throttled to 30 minutes, so the worker holds no
+        // fresh reading of its own.
+        val primary = spaceTracker.readPrimaryStorage()
+        // readPrimaryStorage() can return a non-null 0/0 reading, which would otherwise classify as
+        // a warning state and post "0 B free".
+        if (primary == null || primary.spaceCapacity <= 0L || primary.spaceFree !in 0L..primary.spaceCapacity) {
+            log(TAG, WARN) { "check(): Implausible primary reading, skipping: $primary" }
+            return
+        }
+
+        val forecast = if (enabled) {
+            // Single-storage history only: StorageTrendCalculator needs one volume's snapshots, a
+            // merged multi-volume list yields a meaningless rate.
+            val history = spaceHistoryRepo
+                .getHistory(primary.storageId, Instant.now() - HISTORY_WINDOW)
+                .first()
+            StorageForecaster.forecast(
+                history = history,
+                current = primary,
+                lowStorageThresholdBytes = LowStorage.resolveThreshold(
+                    capacityBytes = primary.spaceCapacity,
+                    customThresholdBytes = lowStorageSettings.lowStorageThresholdBytes.value(),
+                ),
+            )
+        } else {
+            null
+        }
+
+        val decision = LowSpaceAlertDecider.decide(
+            enabled = enabled,
+            armed = armed,
+            forecast = forecast,
+            freeBytes = primary.spaceFree,
+        )
+        log(TAG) { "check(): $decision (forecast=$forecast, armed=$armed, enabled=$enabled)" }
+
+        var armedAfter = decision.armedAfter
+        when (val action = decision.action) {
+            is LowSpaceAction.Notify -> {
+                val result = notifications.notifyLowSpace(action.forecast, action.freeBytes)
+                // Only a successful post spends the latch.
+                if (result == LowSpaceNotifications.PostResult.POSTED) armedAfter = false
+            }
+
+            LowSpaceAction.Cancel -> notifications.cancel()
+            LowSpaceAction.Nothing -> {}
+        }
+
+        if (armedAfter != null) setArmed(armedAfter)
+    }
+
+    private suspend fun cancelAndRearm() {
+        try {
+            mutex.withLock {
+                notifications.cancel()
+                setArmed(true)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log(TAG, ERROR) { "cancelAndRearm() failed: ${e.asLog()}" }
+        }
+    }
+
+    /** Writes only on an actual change, so a device with the feature off takes no six-hourly write. */
+    private suspend fun setArmed(value: Boolean) {
+        if (lowStorageSettings.lowSpaceNotificationArmed.value() == value) return
+        log(TAG) { "setArmed($value)" }
+        lowStorageSettings.lowSpaceNotificationArmed.value(value)
+    }
+
+    companion object {
+        // Same window the dashboard forecast uses.
+        private val HISTORY_WINDOW: Duration = Duration.ofDays(7)
+        private val TAG = logTag("Stats", "LowSpace", "Monitor")
+    }
+}

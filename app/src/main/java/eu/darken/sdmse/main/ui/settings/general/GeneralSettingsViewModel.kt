@@ -1,0 +1,177 @@
+package eu.darken.sdmse.main.ui.settings.general
+
+import android.annotation.SuppressLint
+import android.os.LocaleList
+import dagger.hilt.android.lifecycle.HiltViewModel
+import eu.darken.sdmse.common.coroutine.DispatcherProvider
+import eu.darken.sdmse.common.datastore.value
+import eu.darken.sdmse.common.debug.DebugSettings
+import eu.darken.sdmse.common.debug.logging.log
+import eu.darken.sdmse.common.debug.logging.logTag
+import eu.darken.sdmse.common.device.RomType
+import eu.darken.sdmse.common.flow.combine
+import eu.darken.sdmse.common.hasApiLevel
+import eu.darken.sdmse.common.locale.LocaleManager
+import eu.darken.sdmse.common.theming.ThemeColor
+import eu.darken.sdmse.common.theming.ThemeMode
+import eu.darken.sdmse.common.theming.ThemeState
+import eu.darken.sdmse.common.theming.ThemeStyle
+import eu.darken.sdmse.common.uix.ViewModel4
+import eu.darken.sdmse.common.updater.UpdateChecker
+import eu.darken.sdmse.main.core.GeneralSettings
+import eu.darken.sdmse.main.core.themeState
+import eu.darken.sdmse.common.compose.tour.GuidedTourController
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import javax.inject.Inject
+
+@HiltViewModel
+class GeneralSettingsViewModel @Inject constructor(
+    dispatcherProvider: DispatcherProvider,
+    private val generalSettings: GeneralSettings,
+    private val debugSettings: DebugSettings,
+    private val updateChecker: UpdateChecker,
+    private val localeManager: LocaleManager,
+    private val guidedTourController: GuidedTourController,
+) : ViewModel4(dispatcherProvider, TAG) {
+
+    val state: StateFlow<State> = combine(
+        flow { emit(updateChecker.isCheckSupported()) },
+        generalSettings.enableDashboardOneClick.flow,
+        generalSettings.shortcutOneClickEnabled.flow,
+        generalSettings.themeState,
+        generalSettings.usePreviews.flow,
+        generalSettings.romTypeDetection.flow,
+        generalSettings.isUpdateCheckEnabled.flow,
+        debugSettings.isDebugMode.flow,
+        localeManager.currentLocales,
+        generalSettings.oneClickCorpseFinderEnabled.flow,
+        generalSettings.oneClickSystemCleanerEnabled.flow,
+        generalSettings.oneClickAppCleanerEnabled.flow,
+        generalSettings.widgetOneClickEnabled.flow,
+        generalSettings.dashboardHeroAutoShow.flow,
+    ) { isUpdateCheckSupported, oneClick, shortcut, theme, previews, romType, updateCheck, debug, locales,
+        oneClickCorpseFinder, oneClickSystemCleaner, oneClickAppCleaner, widgetOneClick,
+        summaryAutoShow ->
+        State(
+            isUpdateCheckSupported = isUpdateCheckSupported,
+            enableDashboardOneClick = oneClick,
+            shortcutOneClickEnabled = shortcut,
+            themeMode = theme.mode,
+            themeStyle = theme.style,
+            themeColor = theme.color,
+            usePreviews = previews,
+            romTypeDetection = romType,
+            isUpdateCheckEnabled = updateCheck,
+            isDebugMode = debug,
+            currentLocales = locales,
+            showLanguage = hasApiLevel(33),
+            oneClickCorpseFinderEnabled = oneClickCorpseFinder,
+            oneClickSystemCleanerEnabled = oneClickSystemCleaner,
+            oneClickAppCleanerEnabled = oneClickAppCleaner,
+            widgetOneClickEnabled = widgetOneClick,
+            dashboardSummaryAutoShow = summaryAutoShow,
+        )
+    }.safeStateIn(
+        initialValue = State(),
+        onError = { State() },
+    )
+
+    fun toggleOneClick(enabled: Boolean) = launch {
+        generalSettings.enableDashboardOneClick.value(enabled)
+    }
+
+    fun toggleShortcutOneClick(enabled: Boolean) = launch {
+        generalSettings.shortcutOneClickEnabled.value(enabled)
+    }
+
+    fun toggleDashboardSummaryAutoShow(enabled: Boolean) = launch {
+        generalSettings.dashboardHeroAutoShow.value(enabled)
+    }
+
+    fun toggleWidgetOneClick(enabled: Boolean) = launch {
+        generalSettings.widgetOneClickEnabled.value(enabled)
+        // Enabling here counts as consent, so the widget's one-time in-app prompt never appears
+        // (and a later disable+widget-tap doesn't re-prompt).
+        if (enabled) generalSettings.widgetOneClickConsentAsked.value(true)
+    }
+
+    fun setThemeMode(mode: ThemeMode) = launch {
+        generalSettings.themeMode.value(mode)
+    }
+
+    fun setThemeStyle(style: ThemeStyle) = launch {
+        generalSettings.themeStyle.value(style)
+    }
+
+    fun setThemeColor(color: ThemeColor) = launch {
+        generalSettings.themeColor.value(color)
+    }
+
+    fun togglePreviews(enabled: Boolean) = launch {
+        generalSettings.usePreviews.value(enabled)
+    }
+
+    fun setRomType(romType: RomType) = launch {
+        generalSettings.romTypeDetection.value(romType)
+    }
+
+    fun toggleUpdateCheck(enabled: Boolean) = launch {
+        generalSettings.isUpdateCheckEnabled.value(enabled)
+    }
+
+    fun toggleDebugMode(enabled: Boolean) = launch {
+        debugSettings.isDebugMode.value(enabled)
+    }
+
+    fun setOneClickCorpseFinder(enabled: Boolean) = launch {
+        generalSettings.oneClickCorpseFinderEnabled.value(enabled)
+    }
+
+    fun setOneClickSystemCleaner(enabled: Boolean) = launch {
+        generalSettings.oneClickSystemCleanerEnabled.value(enabled)
+    }
+
+    fun setOneClickAppCleaner(enabled: Boolean) = launch {
+        generalSettings.oneClickAppCleanerEnabled.value(enabled)
+    }
+
+    fun resetGuidedTours() = launch {
+        guidedTourController.reset()
+    }
+
+    @SuppressLint("NewApi")
+    fun showLanguagePicker() = launch {
+        log(TAG) { "showLanguagePicker()" }
+        if (hasApiLevel(33)) {
+            localeManager.showLanguagePicker()
+        } else {
+            throw IllegalStateException("This should not be clickable below API 33...")
+        }
+    }
+
+    data class State(
+        val isUpdateCheckSupported: Boolean = false,
+        val enableDashboardOneClick: Boolean = false,
+        val shortcutOneClickEnabled: Boolean = false,
+        val themeMode: ThemeMode = ThemeMode.SYSTEM,
+        val themeStyle: ThemeStyle = ThemeStyle.DEFAULT,
+        val themeColor: ThemeColor = ThemeColor.GREEN,
+        val usePreviews: Boolean = true,
+        val romTypeDetection: RomType = RomType.AUTO,
+        val isUpdateCheckEnabled: Boolean = false,
+        val isDebugMode: Boolean = false,
+        val currentLocales: LocaleList? = null,
+        val showLanguage: Boolean = false,
+        val oneClickCorpseFinderEnabled: Boolean = true,
+        val oneClickSystemCleanerEnabled: Boolean = true,
+        val oneClickAppCleanerEnabled: Boolean = true,
+        val widgetOneClickEnabled: Boolean = false,
+        val dashboardSummaryAutoShow: Boolean = true,
+    )
+
+    companion object {
+        private val TAG = logTag("Settings", "General", "ViewModel")
+    }
+}

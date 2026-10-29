@@ -1,0 +1,29 @@
+package eu.darken.sdmse.main.ui.dashboard.cards
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+
+
+@Composable
+internal fun DashboardListCard(
+    modifier: Modifier = Modifier,
+    item: DashboardItem,
+    mascotTopBump: Int = 0,
+) {
+    when (item) {
+        is TitleDashboardCardItem -> TitleDashboardCard(
+            item = item,
+            mascotTopBump = mascotTopBump,
+        )
+        is SetupDashboardCardItem -> SetupDashboardCard(modifier = modifier, item = item)
+        is UpdateDashboardCardItem -> UpdateDashboardCard(item)
+        is ToolDashboardCardItem -> ToolDashboardCard(modifier = modifier, item = item)
+        is DebugRecorderDashboardCardItem -> DebugRecorderDashboardCard(item)
+        is ReviewDashboardCardItem -> ReviewDashboardCard(item)
+        is AnniversaryDashboardCardItem -> AnniversaryDashboardCard(item)
+        is StatsDashboardCardItem -> StatsDashboardCard(item)
+        is DebugDashboardCardItem -> DebugDashboardCard(item)
+        is DryRunWarningDashboardCardItem -> DryRunWarningDashboardCard(item)
+        is ErrorDataAreaDashboardCardItem -> ErrorDataAreaDashboardCard(item)
+    }
+}

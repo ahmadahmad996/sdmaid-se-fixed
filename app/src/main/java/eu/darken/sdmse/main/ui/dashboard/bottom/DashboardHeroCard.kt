@@ -1,0 +1,443 @@
+package eu.darken.sdmse.main.ui.dashboard.bottom
+
+import android.text.format.DateUtils
+import androidx.annotation.PluralsRes
+import androidx.annotation.StringRes
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.twotone.Close
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.contentColorFor
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import eu.darken.sdmse.R
+import eu.darken.sdmse.common.ByteFormatter
+import eu.darken.sdmse.common.compose.SdmInfoChip
+import eu.darken.sdmse.common.compose.icons.icon
+import eu.darken.sdmse.common.compose.preview.Preview2
+import eu.darken.sdmse.common.compose.preview.PreviewWrapper
+import eu.darken.sdmse.main.core.SDMTool
+import eu.darken.sdmse.main.ui.dashboard.HeroSummary
+import eu.darken.sdmse.main.ui.dashboard.cards.toolNameRes
+import java.time.Instant
+import eu.darken.sdmse.common.R as CommonR
+
+/**
+ * Floating hero card surfacing the one-tap-actionable cleanup result. Drapes over the FAB via
+ * [DashboardHeroCardShape]'s bottom notch — the body stays clear of that notch, while the
+ * [DASHBOARD_CUTOUT_DEPTH]-tall shoulders beside it carry a footer: the result's age at the start,
+ * and (when [onDiscard] is set) a Discard action at the end.
+ */
+@Composable
+internal fun DashboardHeroCard(
+    modifier: Modifier = Modifier,
+    summary: HeroSummary,
+    now: Instant = Instant.now(),
+    onDismiss: () -> Unit = {},
+    onDiscard: (() -> Unit)? = null,
+    onToolClick: (HeroSummary.Mode, SDMTool.Type) -> Unit = { _, _ -> },
+    entryFocusRequester: FocusRequester? = null,
+) {
+    // Explicit D-pad ladder through the card — spatial search is unreliable here (the Dismiss X
+    // sits top-right outside most beams and picks vary by screen size): [entryFocusRequester]
+    // (UP from the bar/FAB) lands on Discard when present, else on the X; UP from Discard and
+    // the tool chips goes to the X; UP from the X falls out of the dock (back to the grid).
+    val dismissFocusRequester = remember { FocusRequester() }
+    // Colour tracks the action: destructive (red) while a deletion is pending, positive once freed,
+    // neutral when the cleanup ran but came up empty (nothing was lost, nothing was gained).
+    val (containerColor, contentColor) = when (summary.mode) {
+        HeroSummary.Mode.FREEABLE ->
+            MaterialTheme.colorScheme.error to MaterialTheme.colorScheme.onError
+
+        HeroSummary.Mode.FREED ->
+            MaterialTheme.colorScheme.tertiaryContainer to MaterialTheme.colorScheme.onTertiaryContainer
+
+        HeroSummary.Mode.NOTHING_FREED ->
+            MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        modifier = modifier,
+        color = containerColor,
+        contentColor = contentColor,
+        shape = DashboardHeroCardShape,
+        shadowElevation = 8.dp,
+    ) {
+        // Body then footer, each at its natural height — the card is whatever they add up to. No
+        // minimum: the body always carries a headline, a caption and a hint, so there is no state
+        // it can collapse out of, and a floor would only pad the sparsest cards back out.
+        Column {
+            HeroBody(
+                summary = summary,
+                onDismiss = onDismiss,
+                onToolClick = onToolClick,
+                dismissFocusRequester = dismissFocusRequester,
+                dismissEntryRequester = entryFocusRequester.takeIf { onDiscard == null },
+            )
+            HeroFooter(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Order matters: the gap wraps the height, so the node is lead-in + notch with
+                    // the content in the bottom DASHBOARD_CUTOUT_DEPTH — flush with the notch it
+                    // flanks. Reversed, the content would be squeezed into what the gap leaves.
+                    .padding(top = DASHBOARD_HERO_FOOTER_TOP_GAP)
+                    .height(DASHBOARD_CUTOUT_DEPTH),
+                summary = summary,
+                now = now,
+                onDiscard = onDiscard,
+                dismissFocusRequester = dismissFocusRequester,
+                discardEntryRequester = entryFocusRequester.takeIf { onDiscard != null },
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroBody(
+    modifier: Modifier = Modifier,
+    summary: HeroSummary,
+    onDismiss: () -> Unit,
+    onToolClick: (HeroSummary.Mode, SDMTool.Type) -> Unit,
+    dismissFocusRequester: FocusRequester = FocusRequester(),
+    dismissEntryRequester: FocusRequester? = null,
+) {
+    val context = LocalContext.current
+    val modeRes = summary.mode.resources
+    // NOTHING_FREED carries no size and no item count, so its headline and caption are plain
+    // sentences rather than templates wrapped around a number.
+    val hasAmounts = summary.mode != HeroSummary.Mode.NOTHING_FREED
+    Column(modifier = modifier) {
+        // Header insets are split between the row and the text column so the two can differ without
+        // either costing horizontal room. The dismiss button's inset is the row's, keeping it square
+        // in the corner; the headline's extra 2.dp is the column's. Padding the *button* instead
+        // would come out of the text column's weight(1f) share, narrowing the headline and caption
+        // on a small display at a large font scale.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, top = 6.dp, end = 8.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(top = 2.dp),
+            ) {
+                // One sentence with the size inline ("3.7 GB can be freed") — the smaller label
+                // text is spanned around the headline-sized number. Split on the placeholder so
+                // translations may put label text before and/or after the size.
+                val template = stringResource(modeRes.headline)
+                val sizeText = ByteFormatter.formatSize(context, summary.totalSize).first
+                val labelSpan = MaterialTheme.typography.titleSmall.toSpanStyle()
+                    .copy(color = LocalContentColor.current.copy(alpha = MUTED_ALPHA))
+                Text(
+                    text = buildAnnotatedString {
+                        val sizeAt = template.indexOf(SIZE_ARG)
+                        when {
+                            !hasAmounts -> withStyle(labelSpan) { append(template) }
+                            sizeAt == -1 -> append(sizeText)
+                            else -> {
+                                withStyle(labelSpan) { append(template.take(sizeAt)) }
+                                append(sizeText)
+                                withStyle(labelSpan) { append(template.substring(sizeAt + SIZE_ARG.length)) }
+                            }
+                        }
+                    },
+                    style = MaterialTheme.typography.headlineSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val captionText = when (val caption = modeRes.caption) {
+                    is HeroCaption.Counted ->
+                        pluralStringResource(caption.id, summary.itemCount, summary.itemCount)
+
+                    is HeroCaption.Plain -> stringResource(caption.id)
+                }
+                Text(
+                    // Two lines so the item-count result reads fully at large font scales (the column
+                    // is narrow next to the dismiss button); the card height grows to make room.
+                    text = captionText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                // What the run left behind, when it left anything. Muted and under the caption: it
+                // qualifies the freed total rather than competing with it.
+                if (summary.residueSize > 0L) {
+                    Text(
+                        text = stringResource(
+                            R.string.dashboard_hero_freed_residue,
+                            ByteFormatter.formatSize(context, summary.residueSize).first,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = LocalContentColor.current.copy(alpha = MUTED_ALPHA),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier
+                    .focusRequester(dismissFocusRequester)
+                    .then(dismissEntryRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
+            ) {
+                Icon(
+                    imageVector = Icons.TwoTone.Close,
+                    contentDescription = stringResource(CommonR.string.general_dismiss_action),
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        FlowRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            summary.tools.forEach { slice ->
+                SdmInfoChip(
+                    modifier = Modifier.focusProperties { up = dismissFocusRequester },
+                    icon = slice.type.icon,
+                    label = ByteFormatter.formatSize(context, slice.size).first,
+                    // Neutral pills so they stay legible on either the error- or tertiary-tinted card.
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = contentColorFor(MaterialTheme.colorScheme.surface),
+                    // Tool name doubles as the clickable chip's accessible name (merged with the size).
+                    iconContentDescription = stringResource(toolNameRes(slice.type)),
+                    onClick = { onToolClick(summary.mode, slice.type) },
+                )
+            }
+        }
+
+        // Directly under the chips it talks about ("or a chip to check first").
+        Text(
+            modifier = Modifier.padding(top = 4.dp, start = 20.dp, end = 20.dp),
+            text = stringResource(modeRes.hint),
+            style = MaterialTheme.typography.labelSmall,
+            color = LocalContentColor.current.copy(alpha = MUTED_ALPHA),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * The strip beside the FAB notch: relative result age at the start, Discard at the end. Two
+ * equal-weight cells around a notch-wide spacer keep both clear of the cutout walls (and mirror
+ * correctly in RTL).
+ */
+@Composable
+private fun HeroFooter(
+    modifier: Modifier = Modifier,
+    summary: HeroSummary,
+    now: Instant,
+    onDiscard: (() -> Unit)?,
+    dismissFocusRequester: FocusRequester = FocusRequester(),
+    discardEntryRequester: FocusRequester? = null,
+) {
+    Row(
+        modifier = modifier
+            .padding(start = 24.dp, bottom = 8.dp, end = 24.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            summary.timestamp?.let { timestamp ->
+                // Framework-localized ("5 min. ago") — short in every locale, no translatable string.
+                val relativeTime = remember(timestamp, now) {
+                    DateUtils.getRelativeTimeSpanString(
+                        timestamp.toEpochMilli(),
+                        now.toEpochMilli().coerceAtLeast(timestamp.toEpochMilli()),
+                        DateUtils.MINUTE_IN_MILLIS,
+                    ).toString()
+                }
+                val timestampDescription =
+                    stringResource(summary.mode.resources.timestampDescription, relativeTime)
+                Text(
+                    modifier = Modifier.semantics { contentDescription = timestampDescription },
+                    text = relativeTime,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = LocalContentColor.current.copy(alpha = MUTED_ALPHA),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        // Keeps both cells clear of the notch walls; extra width covers the convex shoulder fillets.
+        Spacer(modifier = Modifier.width(DASHBOARD_CUTOUT_WIDTH + 16.dp))
+        Box(
+            modifier = Modifier.weight(1f),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            if (onDiscard != null) {
+                TextButton(
+                    modifier = Modifier
+                        .height(DASHBOARD_CUTOUT_DEPTH)
+                        .focusProperties { up = dismissFocusRequester }
+                        .then(discardEntryRequester?.let { Modifier.focusRequester(it) } ?: Modifier),
+                    onClick = onDiscard,
+                    colors = ButtonDefaults.textButtonColors(contentColor = LocalContentColor.current),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                ) {
+                    Text(
+                        text = stringResource(CommonR.string.general_discard_action),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private const val SIZE_ARG = "%1\$s"
+private const val MUTED_ALPHA = 0.8f
+
+/**
+ * A mode's caption is either driven by the item count or a plain sentence, and the two need different
+ * resource types. Modelled rather than left as a bare id so a mode cannot be wired to the wrong one.
+ */
+private sealed interface HeroCaption {
+    /** Must be a `<plurals>`: languages with verb agreement need a different form per quantity. */
+    data class Counted(@PluralsRes val id: Int) : HeroCaption
+    data class Plain(@StringRes val id: Int) : HeroCaption
+}
+
+/** Per-mode string resources, kept together so each mode is defined in one place. */
+private data class HeroModeResources(
+    @StringRes val headline: Int,
+    val caption: HeroCaption,
+    @StringRes val hint: Int,
+    @StringRes val timestampDescription: Int,
+)
+
+private val HeroSummary.Mode.resources: HeroModeResources
+    get() = when (this) {
+        HeroSummary.Mode.FREEABLE -> HeroModeResources(
+            headline = R.string.dashboard_hero_freeable_headline,
+            caption = HeroCaption.Counted(R.plurals.dashboard_hero_freeable_x_items),
+            hint = R.string.dashboard_hero_freeable_hint,
+            timestampDescription = R.string.dashboard_hero_scanned_timestamp_description,
+        )
+
+        HeroSummary.Mode.FREED -> HeroModeResources(
+            headline = R.string.dashboard_hero_freed_headline,
+            caption = HeroCaption.Counted(R.plurals.dashboard_hero_freed_x_items),
+            hint = R.string.dashboard_hero_freed_hint,
+            timestampDescription = R.string.dashboard_hero_freed_timestamp_description,
+        )
+
+        HeroSummary.Mode.NOTHING_FREED -> HeroModeResources(
+            headline = R.string.dashboard_hero_nothing_freed_headline,
+            caption = HeroCaption.Plain(R.string.dashboard_hero_nothing_freed_caption),
+            hint = R.string.dashboard_hero_nothing_freed_hint,
+            timestampDescription = R.string.dashboard_hero_nothing_freed_timestamp_description,
+        )
+    }
+
+private fun previewSummary(
+    mode: HeroSummary.Mode = HeroSummary.Mode.FREEABLE,
+    tools: List<HeroSummary.ToolSlice> = listOf(
+        HeroSummary.ToolSlice(SDMTool.Type.CORPSEFINDER, 1_024L * 1_024L * 1_024L, 12),
+        HeroSummary.ToolSlice(SDMTool.Type.SYSTEMCLEANER, 1_024L * 1_024L * 700L, 14),
+        HeroSummary.ToolSlice(SDMTool.Type.APPCLEANER, 1_024L * 1_024L * 1_024L, 5),
+    ),
+) = HeroSummary(
+    mode = mode,
+    totalSize = tools.sumOf { it.size },
+    itemCount = tools.sumOf { it.count },
+    tools = tools,
+    timestamp = Instant.now().minusSeconds(5 * 60),
+)
+
+@Composable
+private fun HeroCardPreview(
+    summary: HeroSummary,
+    onDiscard: (() -> Unit)? = null,
+) {
+    PreviewWrapper {
+        DashboardHeroCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = DASHBOARD_HERO_HORIZONTAL_MARGIN),
+            summary = summary,
+            onDiscard = onDiscard,
+        )
+    }
+}
+
+@Preview2
+@Composable
+private fun DashboardHeroCardFreeablePreview() {
+    HeroCardPreview(
+        summary = previewSummary(mode = HeroSummary.Mode.FREEABLE),
+        onDiscard = {},
+    )
+}
+
+@Preview2
+@Composable
+private fun DashboardHeroCardFreedPreview() {
+    HeroCardPreview(summary = previewSummary(mode = HeroSummary.Mode.FREED))
+}
+
+@Preview2
+@Composable
+private fun DashboardHeroCardNothingFreedPreview() {
+    HeroCardPreview(summary = previewSummary(mode = HeroSummary.Mode.NOTHING_FREED, tools = emptyList()))
+}
+
+// Worst case: all three tools (chips wrap to a second row) + the two-line freeable hint — validates
+// card height.
+@Preview2
+@Composable
+private fun DashboardHeroCardFreeableAllToolsPreview() {
+    HeroCardPreview(
+        summary = previewSummary(
+            mode = HeroSummary.Mode.FREEABLE,
+            tools = listOf(
+                HeroSummary.ToolSlice(SDMTool.Type.CORPSEFINDER, 1_024L * 1_024L * 1_024L, 12),
+                HeroSummary.ToolSlice(SDMTool.Type.SYSTEMCLEANER, 1_024L * 1_024L * 700L, 14),
+                HeroSummary.ToolSlice(SDMTool.Type.APPCLEANER, 1_024L * 1_024L * 1_024L, 5),
+                HeroSummary.ToolSlice(SDMTool.Type.DEDUPLICATOR, 1_024L * 1_024L * 512L, 3),
+            ),
+        ),
+        onDiscard = {},
+    )
+}
